@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "bizinfo": {
+      "command": "python",
+      "args": ["여기에_server.py의_절대경로_입력/bizinfo_mcp/server.py"],
+      "env": {
+        "BIZINFO_API_KEY": "여기에_기업마당_API_키_입력"
+      }
+    }
+  }
+}

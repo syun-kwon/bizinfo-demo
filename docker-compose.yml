@@ -1,0 +1,22 @@
+services:
+
+  bizinfo-mcp:
+    build: ./bizinfo_mcp
+    environment:
+      - BIZINFO_API_KEY=${BIZINFO_API_KEY}
+      - MCP_TRANSPORT=sse
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+      - FASTMCP_TRANSPORT_SECURITY__ENABLE_DNS_REBINDING_PROTECTION=false
+      - FASTMCP_TRANSPORT_SECURITY__ALLOWED_HOSTS=["bizinfo-mcp:8000","localhost:8000","0.0.0.0:8000"]
+    restart: unless-stopped
+
+  bizinfo-web:
+    build:
+      context: .
+      dockerfile: bizinfo_web/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - BIZINFO_API_KEY=${BIZINFO_API_KEY}
+    restart: unless-stopped

@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>기업마당 지원사업 조회</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    .md h1  { font-size:1.4rem; font-weight:700; margin:0.75rem 0 0.5rem; }
+    .md h2  { font-size:1.2rem; font-weight:700; margin:1rem 0 0.4rem; }
+    .md h3  { font-size:1.05rem; font-weight:600; margin:0.75rem 0 0.3rem; }
+    .md h4  { font-size:0.95rem; font-weight:600; margin:0.5rem 0 0.2rem; }
+    .md p   { margin-bottom:0.4rem; line-height:1.6; }
+    .md ul, .md ol { padding-left:1.5rem; margin-bottom:0.5rem; }
+    .md li  { margin-bottom:0.2rem; }
+    .md table  { border-collapse:collapse; width:100%; margin:0.5rem 0; font-size:0.875rem; }
+    .md th, .md td { border:1px solid #e2e8f0; padding:0.4rem 0.75rem; text-align:left; }
+    .md th  { background:#f1f5f9; font-weight:600; }
+    .md tr:nth-child(even) { background:#f8fafc; }
+    .md a   { color:#2563eb; text-decoration:underline; }
+    .md a:hover { color:#1d4ed8; }
+    .md strong  { font-weight:600; }
+    .md hr  { border:none; border-top:1px solid #e2e8f0; margin:0.75rem 0; }
+    .md blockquote { border-left:3px solid #3b82f6; padding-left:0.75rem; color:#475569; margin:0.5rem 0; }
+    .md code { background:#f1f5f9; padding:0.1rem 0.3rem; border-radius:0.25rem; font-size:0.82rem; }
+    .tab-btn.active { border-color:#2563eb; color:#2563eb; }
+    .tab-btn { transition: color 0.15s, border-color 0.15s; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen text-gray-800">
+
+  <!-- Header -->
+  <header class="bg-blue-700 text-white shadow">
+    <div class="max-w-5xl mx-auto px-4 py-4 flex items-center gap-3">
+      <span class="text-2xl">🏢</span>
+      <div>
+        <h1 class="text-xl font-bold leading-tight">기업마당 지원사업 조회</h1>
+        <p class="text-blue-200 text-xs mt-0.5">중소벤처기업부 기업마당 Open API</p>
+      </div>
+    </div>
+  </header>
+
+  <!-- Tab Bar -->
+  <div class="bg-white border-b">
+    <div class="max-w-5xl mx-auto px-4 flex gap-0">
+      <button onclick="showTab('stats')"  id="btn-stats"  class="tab-btn active   border-b-2 px-5 py-3 text-sm font-medium">📊 분야별 통계</button>
+      <button onclick="showTab('search')" id="btn-search" class="tab-btn border-b-2 border-transparent px-5 py-3 text-sm font-medium text-gray-500 hover:text-gray-700">🔍 지원사업 검색</button>
+      <button onclick="showTab('new')"    id="btn-new"    class="tab-btn border-b-2 border-transparent px-5 py-3 text-sm font-medium text-gray-500 hover:text-gray-700">🆕 신규 공고</button>
+      <button onclick="showTab('report')" id="btn-report" class="tab-btn border-b-2 border-transparent px-5 py-3 text-sm font-medium text-gray-500 hover:text-gray-700">📋 리포트</button>
+    </div>
+  </div>
+
+  <main class="max-w-5xl mx-auto px-4 py-6 space-y-4">
+
+    <!-- ── 통계 탭 ── -->
+    <section id="tab-stats" class="tab-section">
+      <div class="bg-white rounded-xl shadow-sm border p-6">
+        <h2 class="text-base font-semibold mb-4 text-gray-700">현재 진행 중인 지원사업 분야별 현황</h2>
+        <div class="flex flex-wrap gap-3 items-end mb-5">
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">지역</label>
+            <select id="stats-region" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"></select>
+          </div>
+          <button onclick="loadStats()" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition">조회</button>
+        </div>
+        <div id="stats-result" class="md text-sm"></div>
+      </div>
+    </section>
+
+    <!-- ── 검색 탭 ── -->
+    <section id="tab-search" class="tab-section hidden">
+      <div class="bg-white rounded-xl shadow-sm border p-6">
+        <h2 class="text-base font-semibold mb-4 text-gray-700">지원사업 검색</h2>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+          <div class="col-span-2 md:col-span-3">
+            <label class="block text-xs font-medium text-gray-500 mb-1">키워드</label>
+            <input id="search-keyword" type="text" placeholder="예: R&D, 창업, 수출" class="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" onkeydown="if(event.key==='Enter') loadSearch()" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">분야</label>
+            <select id="search-realm" class="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"></select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">지역</label>
+            <select id="search-region" class="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"></select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">상태</label>
+            <select id="search-status" class="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+              <option value="진행중">진행중</option>
+              <option value="마감">마감</option>
+              <option value="전체">전체</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">페이지당 건수</label>
+            <select id="search-size" class="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+              <option value="10">10건</option>
+              <option value="20" selected>20건</option>
+              <option value="50">50건</option>
+            </select>
+          </div>
+        </div>
+        <div class="flex gap-2 items-center mb-5">
+          <button onclick="loadSearch(1)" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition">검색</button>
+          <span id="search-page-info" class="text-xs text-gray-400"></span>
+          <div class="ml-auto flex gap-2">
+            <button id="search-prev" onclick="changePage(-1)" class="hidden border px-3 py-1.5 rounded-lg text-sm hover:bg-gray-50 transition">← 이전</button>
+            <button id="search-next" onclick="changePage(1)"  class="hidden border px-3 py-1.5 rounded-lg text-sm hover:bg-gray-50 transition">다음 →</button>
+          </div>
+        </div>
+        <div id="search-result" class="md text-sm"></div>
+      </div>
+    </section>
+
+    <!-- ── 신규 공고 탭 ── -->
+    <section id="tab-new" class="tab-section hidden">
+      <div class="bg-white rounded-xl shadow-sm border p-6">
+        <h2 class="text-base font-semibold mb-4 text-gray-700">최근 신규 등록 공고</h2>
+        <div class="flex flex-wrap gap-3 items-end mb-5">
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">조회 기간</label>
+            <select id="new-days" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+              <option value="3">최근 3일</option>
+              <option value="7" selected>최근 7일</option>
+              <option value="14">최근 14일</option>
+              <option value="30">최근 30일</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">분야</label>
+            <select id="new-realm" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"></select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">지역</label>
+            <select id="new-region" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"></select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">최대 페이지</label>
+            <select id="new-maxpages" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+              <option value="2">2페이지</option>
+              <option value="3" selected>3페이지</option>
+              <option value="5">5페이지</option>
+              <option value="10">10페이지</option>
+            </select>
+          </div>
+          <button onclick="loadNew()" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition">조회</button>
+        </div>
+        <div id="new-result" class="md text-sm"></div>
+      </div>
+    </section>
+
+    <!-- ── 리포트 탭 ── -->
+    <section id="tab-report" class="tab-section hidden">
+      <div class="bg-white rounded-xl shadow-sm border p-6">
+        <h2 class="text-base font-semibold mb-4 text-gray-700">지원사업 마크다운 리포트 생성</h2>
+        <div class="flex flex-wrap gap-3 items-end mb-5">
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">기간</label>
+            <select id="report-days" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+              <option value="7" selected>최근 7일</option>
+              <option value="14">최근 14일</option>
+              <option value="30">최근 30일</option>
+              <option value="60">최근 60일</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">분야</label>
+            <select id="report-realm" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"></select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">지역</label>
+            <select id="report-region" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"></select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">최대 건수</label>
+            <select id="report-items" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+              <option value="20">20건</option>
+              <option value="50" selected>50건</option>
+              <option value="100">100건</option>
+            </select>
+          </div>
+          <button onclick="loadReport()" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition">생성</button>
+          <button id="download-btn" onclick="downloadReport()" class="hidden border border-gray-300 hover:bg-gray-50 px-4 py-2 rounded-lg text-sm font-medium transition">⬇ 다운로드</button>
+        </div>
+        <div id="report-result" class="md text-sm"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    const REALMS  = ['전체','금융','기술','인력','수출','내수','창업','경영','기타'];
+    const REGIONS = ['전국','서울','부산','대구','인천','광주','대전','울산','세종','경기','강원','충북','충남','전북','전남','경북','경남','제주'];
+
+    let currentPage = 1;
+    let reportMarkdown = '';
+
+    // ── 초기화 ──────────────────────────────────────────
+
+    function initSelects() {
+      const realmSelects  = ['search-realm','new-realm','report-realm'];
+      const regionSelects = ['stats-region','search-region','new-region','report-region'];
+
+      realmSelects.forEach(id => {
+        const el = document.getElementById(id);
+        REALMS.forEach(r => el.add(new Option(r, r)));
+      });
+      regionSelects.forEach(id => {
+        const el = document.getElementById(id);
+        REGIONS.forEach(r => el.add(new Option(r, r)));
+      });
+    }
+
+    // ── 탭 전환 ─────────────────────────────────────────
+
+    function showTab(name) {
+      document.querySelectorAll('.tab-section').forEach(el => el.classList.add('hidden'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active','border-blue-600','text-blue-600'));
+      document.getElementById('tab-' + name).classList.remove('hidden');
+      const btn = document.getElementById('btn-' + name);
+      btn.classList.add('active','border-blue-600','text-blue-600');
+      btn.classList.remove('border-transparent','text-gray-500');
+    }
+
+    // ── 공통 유틸 ────────────────────────────────────────
+
+    function loading(id) {
+      document.getElementById(id).innerHTML =
+        '<div class="flex items-center gap-2 text-gray-400 py-4">' +
+        '<svg class="animate-spin h-5 w-5 text-blue-500" fill="none" viewBox="0 0 24 24">' +
+        '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
+        '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path></svg>' +
+        '조회 중...</div>';
+    }
+
+    function renderMd(id, text) {
+      document.getElementById(id).innerHTML = marked.parse(text);
+    }
+
+    function renderError(id, msg) {
+      document.getElementById(id).innerHTML =
+        '<div class="text-red-500 text-sm py-2">⚠ ' + msg + '</div>';
+    }
+
+    async function fetchAPI(url) {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      return res.json();
+    }
+
+    // ── 분야별 통계 ──────────────────────────────────────
+
+    async function loadStats() {
+      loading('stats-result');
+      const region = document.getElementById('stats-region').value;
+      try {
+        const data = await fetchAPI(`/api/stats?region=${encodeURIComponent(region)}`);
+        renderMd('stats-result', data.markdown);
+      } catch (e) {
+        renderError('stats-result', e.message);
+      }
+    }
+
+    // ── 지원사업 검색 ─────────────────────────────────────
+
+    async function loadSearch(page) {
+      if (page) currentPage = page;
+      loading('search-result');
+
+      const keyword = document.getElementById('search-keyword').value.trim();
+      const realm   = document.getElementById('search-realm').value;
+      const region  = document.getElementById('search-region').value;
+      const status  = document.getElementById('search-status').value;
+      const size    = document.getElementById('search-size').value;
+
+      const params = new URLSearchParams({ realm, region, status, page: currentPage, page_size: size });
+      if (keyword) params.set('keyword', keyword);
+
+      try {
+        const data = await fetchAPI(`/api/search?${params}`);
+        renderMd('search-result', data.markdown);
+
+        // 페이지 버튼 표시
+        const hasMore = data.markdown.includes('다음 페이지 조회');
+        document.getElementById('search-prev').classList.toggle('hidden', currentPage <= 1);
+        document.getElementById('search-next').classList.toggle('hidden', !hasMore);
+        document.getElementById('search-page-info').textContent = `${currentPage}페이지`;
+      } catch (e) {
+        renderError('search-result', e.message);
+      }
+    }
+
+    function changePage(delta) {
+      loadSearch(currentPage + delta);
+    }
+
+    // ── 신규 공고 ─────────────────────────────────────────
+
+    async function loadNew() {
+      loading('new-result');
+      const days     = document.getElementById('new-days').value;
+      const realm    = document.getElementById('new-realm').value;
+      const region   = document.getElementById('new-region').value;
+      const maxPages = document.getElementById('new-maxpages').value;
+      const params   = new URLSearchParams({ days, realm, region, max_pages: maxPages });
+
+      try {
+        const data = await fetchAPI(`/api/new?${params}`);
+        renderMd('new-result', data.markdown);
+      } catch (e) {
+        renderError('new-result', e.message);
+      }
+    }
+
+    // ── 리포트 생성 ───────────────────────────────────────
+
+    async function loadReport() {
+      loading('report-result');
+      document.getElementById('download-btn').classList.add('hidden');
+      reportMarkdown = '';
+
+      const days     = document.getElementById('report-days').value;
+      const realm    = document.getElementById('report-realm').value;
+      const region   = document.getElementById('report-region').value;
+      const maxItems = document.getElementById('report-items').value;
+      const params   = new URLSearchParams({ days, realm, region, max_items: maxItems });
+
+      try {
+        const data = await fetchAPI(`/api/report?${params}`);
+        renderMd('report-result', data.markdown);
+        reportMarkdown = data.markdown;
+        document.getElementById('download-btn').classList.remove('hidden');
+      } catch (e) {
+        renderError('report-result', e.message);
+      }
+    }
+
+    function downloadReport() {
+      if (!reportMarkdown) return;
+      const blob = new Blob([reportMarkdown], { type: 'text/markdown;charset=utf-8' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      const date = new Date().toISOString().slice(0, 10);
+      a.href     = url;
+      a.download = `bizinfo_report_${date}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // ── 시작 ─────────────────────────────────────────────
+
+    initSelects();
+    loadStats();
+  </script>
+</body>
+</html>
