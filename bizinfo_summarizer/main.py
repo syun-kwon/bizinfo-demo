@@ -23,6 +23,9 @@ MAX_TEXT_CHARS = 5000
 
 # bizinfo.go.kr 상세 페이지 본문 영역 선택자 (우선순위 순)
 CONTENT_SELECTORS = [
+    "div.view_cont",           # bizinfo.go.kr 실제 구조
+    "div.support_project_detail",
+    "div.sub_cont",
     "div.view_content",
     "div.bbs_view",
     "div.cont_wrap",
@@ -130,26 +133,28 @@ async def _scrape(url: str) -> tuple[str, str]:
     # "| 기업마당" 같은 접미사 제거
     title = re.sub(r"\s*[|\-–—]\s*기업마당.*$", "", title).strip()
 
-    # 노이즈 태그 제거
-    for tag in soup(["script", "style", "nav", "header", "footer",
-                     "iframe", "noscript"]):
+    # 노이즈 태그 제거 (header는 제거하지 않음 — 내용이 포함될 수 있음)
+    for tag in soup(["script", "style", "nav", "footer", "iframe", "noscript"]):
         tag.decompose()
-    for el in soup.select(".gnb, .lnb, .snb, #footer, #header, .btn_area"):
+    for el in soup.select(".gnb, .lnb, .snb, #footer, #header, .btn_area, .skip_navi"):
         el.decompose()
 
-    # 본문 영역 탐색 (선택자 우선순위 순)
+    # 본문 영역 탐색 (선택자 우선순위 순) — 가장 긴 텍스트를 우선 사용
     content_text = ""
     for selector in CONTENT_SELECTORS:
         el = soup.select_one(selector)
         if el:
-            content_text = el.get_text(separator="\n", strip=True)
-            if len(content_text) > 200:  # 의미 있는 길이인지 확인
+            candidate = el.get_text(separator="\n", strip=True)
+            if len(candidate) > len(content_text):
+                content_text = candidate
+            if len(content_text) > 500:  # 충분히 길면 중단
                 break
 
-    # 폴백: body 전체
-    if not content_text:
+    # 폴백: 선택자로 충분한 텍스트를 얻지 못한 경우 body 전체 사용
+    if len(content_text) < 200:
         body = soup.find("body")
-        content_text = body.get_text(separator="\n", strip=True) if body else ""
+        if body:
+            content_text = body.get_text(separator="\n", strip=True)
 
     # 공백 정리 및 길이 제한
     content_text = re.sub(r"\n{3,}", "\n\n", content_text)
