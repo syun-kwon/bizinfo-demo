@@ -2,11 +2,11 @@
 
 > 중소벤처기업부 **기업마당(bizinfo.go.kr)** Open API를 활용한 정부 지원사업 조회 시스템
 
-두 가지 방법으로 지원사업을 조회할 수 있습니다.
+두 가지 방법으로 지원사업을 조회하고, AI로 공고 내용을 자동 요약할 수 있습니다.
 
 | 방법 | 설명 | 대상 |
 |------|------|------|
-| **웹 UI** | 브라우저에서 바로 사용하는 대시보드 | 일반 사용자 |
+| **웹 UI** | 브라우저에서 바로 사용하는 대시보드 + AI 요약 | 일반 사용자 |
 | **MCP 서버** | Claude Desktop AI에서 자연어로 조회 | Claude 사용자 |
 
 ---
@@ -35,6 +35,7 @@
 - **🔍 지원사업 검색** — 분야·지역·상태·키워드 조합 검색, 페이지 이동
 - **🆕 신규 공고** — 최근 N일 이내 등록된 신규 공고 목록
 - **📋 리포트 생성** — 분야별로 정리된 마크다운 리포트 생성 및 `.md` 파일 다운로드
+- **🤖 AI 요약** — 공고 링크 옆 `AI 요약` 버튼으로 해당 페이지를 스크래핑하고 로컬 LLM(Ollama)으로 5개 항목 자동 요약
 
 ### Claude Desktop MCP 도구
 
@@ -59,22 +60,27 @@ Claude Desktop에서 자연어로 지원사업을 조회할 수 있습니다.
                     │  (FastAPI + HTML)   │  포트 3000
                     │                     │
                     │  bizinfo_server.py  │  ← server.py 직접 임포트
-                    └─────────┬──────────┘
-                              │
-Claude Desktop ─── SSE ──── http://localhost:8000
-                              │
-                    ┌─────────▼──────────┐
-                    │   bizinfo-mcp       │  Docker 컨테이너
-                    │  (FastMCP SSE)      │  포트 8000 (내부)
-                    └─────────┬──────────┘
-                              │
-                    ┌─────────▼──────────┐
-                    │ 기업마당 Open API   │  외부 인터넷
-                    │ bizinfo.go.kr       │  XML/RSS 응답
-                    └────────────────────┘
+                    └──────┬─────┬───────┘
+                           │     │ POST /api/summarize
+         SSE ──── :8000    │     │
+Claude Desktop             │     ▼
+                    ┌──────▼──   ┌──────────────────────┐
+                    │bizinfo-mcp │  bizinfo-summarizer   │  Docker 컨테이너
+                    │(FastMCP)  │  (FastAPI, 스크래핑)  │  포트 4000
+                    └──────┬─── └──────────┬────────────┘
+                           │               │ /api/generate
+                           │    ┌──────────▼────────────┐
+                           │    │  ollama               │  Docker 컨테이너
+                           │    │  gpt-oss-safeguard:20b│  포트 11434
+                           │    └───────────────────────┘
+                           │
+                    ┌──────▼────────────┐
+                    │ 기업마당 Open API  │  외부 인터넷
+                    │ bizinfo.go.kr      │  XML/RSS 응답
+                    └───────────────────┘
 ```
 
-> **설계 포인트**: `bizinfo-web` 컨테이너는 `server.py`를 직접 임포트하여 MCP 프로토콜 없이 Python 함수를 호출합니다. 별도 네트워크 통신 없이 동일 로직을 재사용합니다.
+> **설계 포인트**: `bizinfo-web` 컨테이너는 `server.py`를 직접 임포트하여 MCP 프로토콜 없이 Python 함수를 호출합니다. AI 요약은 별도 `bizinfo-summarizer` 마이크로서비스로 분리하여 LLM 타임아웃이 웹 서비스에 영향을 주지 않습니다.
 
 ---
 
@@ -90,6 +96,11 @@ Claude Desktop ─── SSE ──── http://localhost:8000
 
 - [Docker Desktop 다운로드](https://www.docker.com/products/docker-desktop/)
 - 설치 후 Docker Desktop 실행 확인
+
+> **⚠️ 메모리 설정 (AI 요약 기능 사용 시)**
+> AI 요약에 사용하는 `gpt-oss-safeguard:20b` 모델은 실행 시 약 13.1 GiB RAM이 필요합니다.
+> Docker Desktop → Settings → Resources → Memory를 **16 GiB 이상**으로 설정하세요.
+> (호스트 시스템에 32 GiB RAM 권장. AI 요약 기능 미사용 시 이 설정은 불필요합니다.)
 
 ### 3. 소스 코드 클론
 
@@ -121,7 +132,13 @@ BIZINFO_API_KEY=여기에_발급받은_API_키_입력
 docker compose up -d
 ```
 
-최초 실행 시 이미지 빌드에 1~2분 소요됩니다.
+최초 실행 시 이미지 빌드 및 Ollama 모델 다운로드에 상당 시간이 소요됩니다.
+
+> **최초 실행 소요 시간 안내**
+> - Docker 이미지 빌드: 1~2분
+> - `gpt-oss-safeguard:20b` 모델 다운로드: **약 13.8 GB** (네트워크 속도에 따라 10분~1시간)
+> - 모델 다운로드 진행 상황: `docker compose logs -f ollama-model-init`
+> - 모델 다운로드 완료 전에는 AI 요약 기능이 동작하지 않습니다.
 
 ### 3단계: 접속 확인
 
@@ -149,6 +166,9 @@ docker compose logs -f
 # 로그 확인 (서비스별)
 docker compose logs -f bizinfo-web
 docker compose logs -f bizinfo-mcp
+docker compose logs -f bizinfo-summarizer
+docker compose logs -f ollama
+docker compose logs -f ollama-model-init  # 모델 다운로드 진행 상황
 
 # 중지
 docker compose down
@@ -329,6 +349,29 @@ asyncio.run(test())
 **생성** 버튼 클릭 후 분야별로 분류된 마크다운 리포트가 화면에 표시됩니다.
 **⬇ 다운로드** 버튼으로 `.md` 파일을 저장할 수 있습니다.
 
+### 🤖 AI 요약 버튼
+
+검색 결과, 신규 공고, 리포트 등 어느 탭에서든 **bizinfo.go.kr 링크 옆에 보라색 `AI 요약` 버튼**이 자동으로 표시됩니다.
+
+| 단계 | 설명 |
+|------|------|
+| 1 | 공고 링크 옆 **`AI 요약`** 버튼 클릭 |
+| 2 | "요약 중…" 표시와 함께 해당 공고 페이지를 스크래핑 |
+| 3 | 로컬 Ollama LLM(`gpt-oss-safeguard:20b`)으로 분석 |
+| 4 | 공고 링크 아래에 5개 항목 요약 결과 표시 |
+
+**요약 출력 형식**
+```
+1. 사업 목적: (한 문장)
+2. 지원 대상: (자격 요건 핵심)
+3. 지원 내용: (금액 또는 혜택)
+4. 신청 방법 및 기간: (방법과 일정)
+5. 주의사항 또는 특이사항: (중요 제약)
+```
+
+> **소요 시간**: 첫 번째 요약은 모델 로딩으로 2~3분, 이후 요청은 30~90초 소요됩니다.
+> **한계**: 공고의 상세 본문(PDF 첨부 파일)은 분석 대상에서 제외되며, 상세 페이지 HTML 텍스트만 요약합니다.
+
 ---
 
 ## 📚 MCP 도구 레퍼런스
@@ -487,6 +530,35 @@ print(json.load(sys.stdin)['markdown'])
 
 ---
 
+### `POST /api/summarize`
+
+공고 페이지 스크래핑 후 AI 요약 (bizinfo-summarizer 프록시)
+
+| 필드 | 필수 | 설명 |
+|------|------|------|
+| `url` | **필수** | 요약할 bizinfo.go.kr 상세 페이지 URL |
+
+```bash
+curl -X POST "http://localhost:3000/api/summarize" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C128/AS/74/view.do?pblancId=PBLN000000000082601"}'
+```
+
+응답:
+```json
+{
+  "url": "https://www.bizinfo.go.kr/...",
+  "title": "공고 제목",
+  "scraped_length": 914,
+  "summary": "1. 사업 목적: ...\n2. 지원 대상: ...\n...",
+  "model": "gpt-oss-safeguard:20b"
+}
+```
+
+> 타임아웃: 330초 (모델 첫 로딩 시 2~3분 소요)
+
+---
+
 ### 공통 응답 형식
 
 모든 엔드포인트는 마크다운 문자열을 포함한 JSON을 반환합니다.
@@ -514,7 +586,7 @@ bizinfo_demo/
 ├── .env                          ← API 키 (로컬 전용, git 제외)
 ├── .env.example                  ← API 키 템플릿 (git 포함)
 ├── .gitignore
-├── docker-compose.yml            ← 통합 실행 (mcp + web)
+├── docker-compose.yml            ← 통합 실행 (mcp + web + summarizer + ollama)
 ├── ARCHITECTURE.md               ← 상세 아키텍처 문서
 ├── WORK_LOG.md                   ← 개발 작업 로그
 ├── README.md                     ← 이 파일
@@ -527,12 +599,17 @@ bizinfo_demo/
 │   ├── .env.example
 │   └── claude_desktop_config_example.json
 │
-└── bizinfo_web/                  ← 웹 프론트엔드
-    ├── main.py                   ← FastAPI 백엔드
-    ├── requirements.txt          ← fastapi, uvicorn, httpx
-    ├── Dockerfile
-    └── static/
-        └── index.html            ← SPA (Tailwind CSS + marked.js)
+├── bizinfo_web/                  ← 웹 프론트엔드
+│   ├── main.py                   ← FastAPI 백엔드 + /api/summarize 프록시
+│   ├── requirements.txt          ← fastapi, uvicorn, httpx
+│   ├── Dockerfile
+│   └── static/
+│       └── index.html            ← SPA (Tailwind CSS + marked.js + AI 요약 UI)
+│
+└── bizinfo_summarizer/           ← AI 요약 마이크로서비스
+    ├── main.py                   ← FastAPI (스크래핑 + Ollama 호출)
+    ├── requirements.txt          ← fastapi, httpx, beautifulsoup4, lxml
+    └── Dockerfile
 ```
 
 ---
@@ -545,6 +622,9 @@ bizinfo_demo/
 | `MCP_TRANSPORT` | 선택 | `sse` 또는 `stdio` (기본: `stdio`) |
 | `MCP_HOST` | 선택 | SSE 바인딩 주소 (기본: `0.0.0.0`) |
 | `MCP_PORT` | 선택 | SSE 포트 (기본: `8000`) |
+| `SUMMARIZER_URL` | 선택 | bizinfo-summarizer 주소 (기본: `http://bizinfo-summarizer:4000`) |
+| `OLLAMA_HOST` | 선택 | Ollama 서버 주소 (기본: `http://ollama:11434`) |
+| `OLLAMA_MODEL` | 선택 | 요약에 사용할 Ollama 모델 (기본: `gpt-oss-safeguard:20b`) |
 
 ---
 
@@ -600,10 +680,32 @@ cat .env
 - 키워드가 너무 구체적이면 결과가 없을 수 있습니다. 짧은 키워드를 사용해보세요.
 - 상태를 `진행중`에서 `전체`로 변경해보세요.
 
+### AI 요약이 동작하지 않을 때
+
+```bash
+# 요약 서비스 상태 확인
+curl http://localhost:4000/health
+
+# Ollama 모델 다운로드 완료 여부 확인
+docker exec bizinfo_demo-ollama-1 ollama list
+
+# 모델이 없으면 수동으로 다운로드
+docker exec bizinfo_demo-ollama-1 ollama pull gpt-oss-safeguard:20b
+
+# 서비스 로그 확인
+docker compose logs bizinfo-summarizer
+docker compose logs ollama
+```
+
+### Docker Desktop 메모리 부족 (`model requires 13.1 GiB, available X GiB`)
+
+Docker Desktop → Settings → Resources → Memory 슬라이더를 **16 GiB 이상**으로 조정 후 Apply & Restart.
+
 ### 응답이 느릴 때
 
 통계 조회는 8개 분야를 병렬로 API 호출하므로 첫 조회 시 5~10초 소요될 수 있습니다.
 리포트 생성은 여러 페이지를 수집하므로 조건에 따라 10~30초 소요될 수 있습니다.
+AI 요약은 첫 번째 요청 시 모델 로딩으로 2~3분, 이후 30~90초 소요됩니다.
 
 ---
 
@@ -614,6 +716,8 @@ cat .env
 | MCP 서버 | Python 3.11, FastMCP, httpx, Pydantic v2 |
 | 웹 백엔드 | Python 3.11, FastAPI, Uvicorn |
 | 웹 프론트엔드 | HTML/JS (Vanilla), Tailwind CSS (CDN), marked.js |
+| AI 요약 | Python 3.11, FastAPI, BeautifulSoup4, lxml, httpx |
+| 로컬 LLM | Ollama, gpt-oss-safeguard:20b (13.8 GB) |
 | 컨테이너 | Docker, Docker Compose |
 | 외부 API | 기업마당 Open API (`/uss/rss/bizinfoApi.do`, XML/RSS) |
 

@@ -386,3 +386,147 @@ filtered = _apply_filters(all_items, keyword=..., status=...)
 | 통계 서울 | 합계 473건 (전국과 명확히 구분됨) |
 
 분야·지역·키워드·상태 필터 모두 정상 동작 확인.
+
+---
+
+## 13. AI 요약 서비스 추가 (bizinfo-summarizer)
+
+**작업일**: 2026-03-10
+
+### 배경 및 목적
+
+기존 시스템은 기업마당 API가 제공하는 `bsnsSumryCn`(사업개요) 필드만 표시했으나, 이 필드는 대부분 비어 있거나 수십 자 수준의 단편 정보에 불과함. 상세 공고 링크를 클릭해야 내용을 확인할 수 있는 불편함 해소를 위해 AI 요약 기능 추가.
+
+### 아키텍처 설계
+
+```
+bizinfo-web (3000)
+    ↓ POST /api/summarize (프록시)
+bizinfo-summarizer (4000)   ← 신규 컨테이너
+    ├── 스크래핑: bizinfo.go.kr 상세 페이지 HTML 파싱
+    └── 요약: Ollama API 호출
+ollama (11434)              ← 신규 컨테이너
+    └── gpt-oss-safeguard:20b 모델
+```
+
+### 신규 생성 파일
+
+| 파일 | 내용 |
+|------|------|
+| `bizinfo_summarizer/main.py` | FastAPI 앱 (`/summarize` POST, `/health` GET) |
+| `bizinfo_summarizer/requirements.txt` | fastapi, uvicorn, httpx, beautifulsoup4, lxml, pydantic |
+| `bizinfo_summarizer/Dockerfile` | python:3.11-slim, port 4000 |
+
+### 수정 파일
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `docker-compose.yml` | `bizinfo-summarizer`, `ollama`, `ollama-model-init` 서비스 및 `ollama_data` 볼륨 추가 |
+| `bizinfo_web/main.py` | `POST /api/summarize` 프록시 엔드포인트 추가, `SUMMARIZER_URL` 환경변수 |
+| `bizinfo_web/static/index.html` | `.ai-summary-btn`/`.ai-summary-box` CSS, `injectSummarizeButtons()`, `requestSummary()` JS 함수 추가 |
+
+### 스크래핑 로직 (`bizinfo_summarizer/main.py`)
+
+```python
+CONTENT_SELECTORS = [
+    "div.view_cont",           # bizinfo.go.kr 실제 구조 (최우선)
+    "div.support_project_detail",
+    "div.sub_cont",
+    ... (8개 폴백 선택자)
+]
+```
+
+- `User-Agent` + `Referer` 헤더로 봇 차단 우회
+- `header` 태그 제거 제외 (콘텐츠가 내부에 위치함)
+- 최적 선택자 불일치 시 `body` 전체 텍스트로 자동 폴백
+- 5,000자 상한으로 Ollama 프롬프트 길이 제어
+
+### Ollama 요약 프롬프트
+
+5개 항목 구조화 프롬프트 (한국어):
+1. 사업 목적 / 2. 지원 대상 / 3. 지원 내용 / 4. 신청 방법 및 기간 / 5. 주의사항
+
+설정값: `temperature=0.3` (사실 추출 집중), `num_predict=1024`, `timeout=300s`
+
+### docker-compose.yml 서비스 구성
+
+```yaml
+ollama:            # ollama/ollama:latest, 포트 11434, ollama_data 볼륨
+ollama-model-init: # curlimages/curl, 모델 pull 1회성 실행
+bizinfo-summarizer: # 자체 빌드, 포트 4000, ollama-model-init 완료 후 시작
+```
+
+**Ollama 헬스체크**: `CMD ["ollama", "list"]` (curl 미포함 이미지)
+
+### 웹 UI 변경
+
+검색·신규공고·리포트 탭 결과의 `bizinfo.go.kr` 링크 옆에 보라색 `AI 요약` 버튼 자동 삽입.
+
+클릭 흐름:
+1. 버튼 클릭 → "요약 중…" 표시
+2. `POST /api/summarize` 호출 → bizinfo-web → bizinfo-summarizer → Ollama
+3. 완료 시 버튼 아래에 보라색 테두리 박스로 5항목 요약 인라인 표시
+4. 재클릭 가능 ("다시 요약")
+
+---
+
+## 14. 테스트 및 버그 수정
+
+**작업일**: 2026-03-10
+
+### 발견 및 수정된 버그
+
+#### Bug 1: Ollama 헬스체크 실패
+- **원인**: `docker-compose.yml`의 헬스체크 명령이 `curl -sf http://localhost:11434/`이었으나 Ollama 이미지에 `curl` 미포함
+- **수정**: `CMD ["ollama", "list"]` 으로 변경
+
+#### Bug 2: 스크래퍼 선택자 미일치
+- **원인**: bizinfo.go.kr 실제 HTML 구조는 `div.view_cont` 사용. 기존 선택자 목록에 없어 101자 단편 텍스트만 추출됨
+- **수정**: `div.view_cont`, `div.support_project_detail`, `div.sub_cont` 을 최우선 선택자로 추가
+
+#### Bug 3: 선택자 폴백 미작동
+- **원인**: 선택자가 매칭되어 `content_text`에 짧은 텍스트가 할당되면, `if not content_text:` 조건이 False가 되어 body 폴백이 실행되지 않음
+- **수정**: `if len(content_text) < 200:` 조건으로 변경
+
+#### Bug 4: `header` 태그 제거로 콘텐츠 손실
+- **원인**: `soup(["script","style","nav","header","footer"])` 에서 `header` 제거 시 실제 콘텐츠 영역도 함께 제거됨
+- **수정**: 노이즈 제거 목록에서 `header` 제외
+
+#### Bug 5: Ollama 타임아웃 (첫 로딩)
+- **원인**: 20B 모델 첫 메모리 로딩에 120초 이상 소요. `OLLAMA_TIMEOUT=120.0` 초과
+- **수정**: `OLLAMA_TIMEOUT=300.0`, 웹 프록시 `timeout=330.0`
+
+#### Bug 6: 요약 내용 잘림
+- **원인**: `num_predict=512` 설정으로 5항목 완성 전에 생성 중단
+- **수정**: `num_predict=1024` 로 증가
+
+#### Bug 7: Docker Desktop 메모리 부족
+- **현상**: `model requires more system memory (13.1 GiB) than is available (2.4 GiB)` 오류
+- **원인**: Docker Desktop 기본 메모리 7.6 GiB로는 20B 모델(13.1 GiB 필요) 로딩 불가
+- **해결**: Docker Desktop Settings → Resources → Memory를 16 GiB 이상으로 증가 (시스템 RAM 32 GB 여유분 활용)
+
+### 최종 테스트 결과
+
+| 테스트 항목 | 결과 |
+|------------|------|
+| 4개 컨테이너 정상 기동 | ✅ |
+| `gpt-oss-safeguard:20b` 모델 로딩 | ✅ (13.8GB) |
+| 스크래핑 (`div.view_cont`) | ✅ 800~914자 추출 |
+| Ollama 요약 직접 호출 (`/summarize`) | ✅ 5항목 한국어 요약 |
+| 웹 프록시 경유 (`/api/summarize`) | ✅ 동일 정상 동작 |
+| 웹 UI `AI 요약` 버튼 주입 | ✅ 전 탭 공통 적용 |
+
+**요약 소요 시간**: 첫 요청 약 2~3분 (모델 메모리 로딩), 이후 요청 30~90초
+
+### 한계 및 향후 개선 방향
+
+현재 요약은 상세 페이지의 개요(메타데이터) 기반이며, 실제 공고문 전체 내용은 첨부 PDF에 포함되어 있음.
+
+| 구분 | 현재 | 향후 개선 시 |
+|------|------|-------------|
+| 데이터 소스 | 상세 페이지 개요 (~900자) | 첨부 PDF 전문 (5,000~20,000자) |
+| 요약 품질 | 기본 메타데이터 수준 | 지원 자격·금액·심사 기준 포함 |
+| 처리 방식 | 동기 (버튼 클릭 → 대기) | 비동기 큐 + SSE 결과 전달 필요 |
+| 모델 | Ollama 로컬 20B CPU | 상용 LLM API 대비 속도/품질 낮음 |
+
+PDF 추출은 이미지 스캔 PDF·HWP 파일 처리 난이도, 컨텍스트 길이 한계(4096 토큰), 추론 시간(5~10분) 문제로 현 아키텍처에서는 사용자 경험 저하가 우려되어 현재 구현에서 제외함.
