@@ -18,7 +18,7 @@ app = FastAPI(title="BizInfo Summarizer")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://ollama:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gpt-oss-safeguard:20b")
 SCRAPE_TIMEOUT = 20.0
-OLLAMA_TIMEOUT = 120.0
+OLLAMA_TIMEOUT = 300.0
 MAX_TEXT_CHARS = 5000
 
 # bizinfo.go.kr 상세 페이지 본문 영역 선택자 (우선순위 순)
@@ -187,7 +187,7 @@ async def _call_ollama(text: str) -> str:
         "stream": False,
         "options": {
             "temperature": 0.3,
-            "num_predict": 512,
+            "num_predict": 1024,
         },
     }
 

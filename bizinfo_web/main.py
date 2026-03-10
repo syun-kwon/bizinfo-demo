@@ -129,7 +129,7 @@ async def generate_report(
 async def proxy_summarize(req: SummarizeRequest):
     """bizinfo-summarizer 서비스로 요약 요청을 프록시합니다."""
     try:
-        async with httpx.AsyncClient(timeout=130.0) as client:
+        async with httpx.AsyncClient(timeout=330.0) as client:
             resp = await client.post(
                 f"{SUMMARIZER_URL}/summarize",
                 json={"url": req.url},
