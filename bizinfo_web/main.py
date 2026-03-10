@@ -6,8 +6,10 @@ bizinfo_server.py의 함수를 직접 호출하여 REST API로 제공합니다.
 import os
 from typing import Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 # MCP 서버 함수 직접 임포트 (SSE 프로토콜 없이 직접 호출)
 from bizinfo_server import (
@@ -25,6 +27,12 @@ from bizinfo_server import (
 )
 
 app = FastAPI(title="BizInfo Web API")
+
+SUMMARIZER_URL = os.environ.get("SUMMARIZER_URL", "http://bizinfo-summarizer:4000")
+
+
+class SummarizeRequest(BaseModel):
+    url: str
 
 
 # ── Health Check ────────────────────────────────────────
@@ -111,6 +119,31 @@ async def generate_report(
         )
         result = await bizinfo_generate_report(params)
         return {"markdown": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── AI 요약 (bizinfo-summarizer 프록시) ─────────────────────
+
+@app.post("/api/summarize")
+async def proxy_summarize(req: SummarizeRequest):
+    """bizinfo-summarizer 서비스로 요약 요청을 프록시합니다."""
+    try:
+        async with httpx.AsyncClient(timeout=130.0) as client:
+            resp = await client.post(
+                f"{SUMMARIZER_URL}/summarize",
+                json={"url": req.url},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(
+            status_code=503,
+            detail="요약 서비스에 연결할 수 없습니다. bizinfo-summarizer가 실행 중인지 확인해주세요.",
+        )
+    except httpx.HTTPStatusError as e:
+        detail = e.response.json().get("detail", e.response.text[:200]) if e.response.headers.get("content-type", "").startswith("application/json") else e.response.text[:200]
+        raise HTTPException(status_code=e.response.status_code, detail=detail)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -26,6 +26,11 @@
     .md code { background:#f1f5f9; padding:0.1rem 0.3rem; border-radius:0.25rem; font-size:0.82rem; }
     .tab-btn.active { border-color:#2563eb; color:#2563eb; }
     .tab-btn { transition: color 0.15s, border-color 0.15s; }
+    .ai-summary-btn { display:inline-block; margin-left:0.4rem; font-size:0.7rem; background:#f3e8ff; color:#7c3aed; border:1px solid #c4b5fd; border-radius:0.25rem; padding:0.1rem 0.45rem; font-weight:500; cursor:pointer; transition:background 0.15s; vertical-align:middle; }
+    .ai-summary-btn:hover:not(:disabled) { background:#ede9fe; }
+    .ai-summary-btn:disabled { opacity:0.6; cursor:wait; }
+    .ai-summary-box { border-left:3px solid #a855f7; background:#faf5ff; padding:0.6rem 0.75rem; margin-top:0.4rem; border-radius:0 0.375rem 0.375rem 0; font-size:0.78rem; line-height:1.65; white-space:pre-wrap; color:#374151; }
+    .ai-summary-box.error { border-color:#ef4444; background:#fef2f2; color:#dc2626; }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen text-gray-800">
@@ -237,6 +242,54 @@
 
     function renderMd(id, text) {
       document.getElementById(id).innerHTML = marked.parse(text);
+      injectSummarizeButtons(id);
+    }
+
+    // ── AI 요약 버튼 주입 ─────────────────────────────────
+
+    function injectSummarizeButtons(containerId) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      container.querySelectorAll('a[href*="bizinfo.go.kr"]').forEach(link => {
+        if (link.parentNode.querySelector('.ai-summary-btn')) return; // 중복 방지
+        const btn = document.createElement('button');
+        btn.className = 'ai-summary-btn';
+        btn.textContent = 'AI 요약';
+        btn.onclick = () => requestSummary(btn, link.href);
+        link.insertAdjacentElement('afterend', btn);
+      });
+    }
+
+    async function requestSummary(btn, url) {
+      const prev = btn.nextElementSibling;
+      if (prev && prev.classList.contains('ai-summary-box')) prev.remove();
+
+      btn.disabled = true;
+      btn.textContent = '요약 중…';
+
+      try {
+        const res = await fetch('/api/summarize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+
+        const box = document.createElement('div');
+        box.className = 'ai-summary-box';
+        box.textContent = data.summary;
+        btn.insertAdjacentElement('afterend', box);
+        btn.textContent = '다시 요약';
+      } catch (e) {
+        const box = document.createElement('div');
+        box.className = 'ai-summary-box error';
+        box.textContent = '요약 실패: ' + e.message;
+        btn.insertAdjacentElement('afterend', box);
+        btn.textContent = 'AI 요약';
+      } finally {
+        btn.disabled = false;
+      }
     }
 
     function renderError(id, msg) {

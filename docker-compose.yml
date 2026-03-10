@@ -19,4 +19,56 @@ services:
       - "3000:3000"
     environment:
       - BIZINFO_API_KEY=${BIZINFO_API_KEY}
+      - SUMMARIZER_URL=http://bizinfo-summarizer:4000
     restart: unless-stopped
+
+  # ── AI 요약 서비스 ────────────────────────────────────────
+  bizinfo-summarizer:
+    build: ./bizinfo_summarizer
+    ports:
+      - "4000:4000"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=gpt-oss-safeguard:20b
+    depends_on:
+      ollama-model-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Ollama LLM 서버 ───────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    # GPU 사용 시 아래 주석 해제:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ── 모델 초기 다운로드 (1회성) ───────────────────────────
+  ollama-model-init:
+    image: curlimages/curl:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    command: >
+      curl -sf -X POST http://ollama:11434/api/pull
+      -H "Content-Type: application/json"
+      -d '{"name":"gpt-oss-safeguard:20b"}'
+    restart: on-failure
+
+volumes:
+  ollama_data:
