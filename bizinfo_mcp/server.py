@@ -31,36 +31,18 @@ MAX_PAGES_PER_REQUEST = 10   # generate_report while 루프 최대 페이지 수
 API_TIMEOUT = 30.0
 
 REALM_CODES = {
-    "금융": "010",
-    "기술": "020",
-    "인력": "030",
-    "수출": "040",
-    "내수": "050",
-    "창업": "060",
-    "경영": "070",
-    "기타": "080",
+    "금융": "01",
+    "기술": "02",
+    "인력": "03",
+    "수출": "04",
+    "내수": "05",
+    "창업": "06",
+    "경영": "07",
+    "기타": "09",
 }
 
-REGION_CODES = {
-    "전국": "",
-    "서울": "11",
-    "부산": "26",
-    "대구": "27",
-    "인천": "28",
-    "광주": "29",
-    "대전": "30",
-    "울산": "31",
-    "세종": "36",
-    "경기": "41",
-    "강원": "42",
-    "충북": "43",
-    "충남": "44",
-    "전북": "45",
-    "전남": "46",
-    "경북": "47",
-    "경남": "48",
-    "제주": "50",
-}
+# 지역 필터는 hashtags 파라미터에 한국어 이름을 그대로 사용합니다.
+# (예: hashtags=서울)
 
 STATUS_CODES = {
     "진행중": "ing",
@@ -368,25 +350,85 @@ def _is_within_days(date_str: str, days: int) -> bool:
 def _build_search_params(
     realm: RealmType,
     region: RegionType,
-    status: StatusType,
-    keyword: Optional[str],
     page: int,
     page_size: int,
 ) -> dict:
-    """API 검색 파라미터를 구성합니다."""
-    params: dict = {
-        "pageIndex": page,
-        "pageUnit": page_size,
-    }
+    """API 검색 파라미터를 구성합니다.
+
+    - 분야 필터: searchLclasId (01~09)
+    - 지역 필터: hashtags (한국어 지역명, 예: 서울)
+    - 상태·키워드 필터: API 미지원 → 호출 후 Python 사이드에서 처리
+    """
+    params: dict = {"pageIndex": page, "pageUnit": page_size}
     if realm != RealmType.전체:
-        params["pldirSportRealmLclasCode"] = REALM_CODES.get(realm.value, "")
+        params["searchLclasId"] = REALM_CODES.get(realm.value, "")
     if region != RegionType.전국:
-        params["bizSprptLclasCode"] = REGION_CODES.get(region.value, "")
-    if status != StatusType.전체:
-        params["pbancSttus"] = STATUS_CODES.get(status.value, "")
-    if keyword:
-        params["pblancNm"] = keyword
+        params["hashtags"] = region.value
     return params
+
+
+# ──────────────────────────────────────────────
+# 전체 데이터 병렬 조회 + 클라이언트 사이드 필터
+# ──────────────────────────────────────────────
+
+async def _fetch_all_programs(max_pages: int = 12, extra_params: Optional[dict] = None) -> list[dict]:
+    """전체 공고를 병렬 페이지 요청으로 가져옵니다.
+
+    extra_params: searchLclasId, hashtags 등 API 레벨 필터를 전달할 수 있습니다.
+    """
+    base = extra_params or {}
+    first_data = await _call_api({**base, "pageIndex": 1, "pageUnit": 100})
+    first_items = first_data.get("jsonArray", [])
+    total = int(first_data.get("totalCount", 0))
+    if total <= 100 or not first_items:
+        return first_items
+    num_pages = min((total + 99) // 100, max_pages)
+
+    async def _get_page(p: int) -> list[dict]:
+        data = await _call_api({**base, "pageIndex": p, "pageUnit": 100})
+        return data.get("jsonArray", [])
+
+    extra = await asyncio.gather(
+        *[_get_page(p) for p in range(2, num_pages + 1)],
+        return_exceptions=True,
+    )
+    result = list(first_items)
+    for r in extra:
+        if isinstance(r, list):
+            result.extend(r)
+    return result
+
+
+def _apply_filters(
+    items: list[dict],
+    realm: RealmType = RealmType.전체,
+    keyword: Optional[str] = None,
+    status: StatusType = StatusType.전체,
+    days: Optional[int] = None,
+) -> list[dict]:
+    """가져온 데이터에 Python 사이드 필터를 적용합니다."""
+    today = datetime.now().strftime("%Y%m%d")
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d") if days is not None else None
+    result = []
+    for raw in items:
+        if realm != RealmType.전체 and raw.get("pldirSportRealmLclasCodeNm", "") != realm.value:
+            continue
+        if keyword and keyword.lower() not in raw.get("pblancNm", "").lower():
+            continue
+        if status == StatusType.진행중:
+            end = raw.get("reqstCloseEndDe", "")
+            if end and end < today:
+                continue
+        elif status == StatusType.마감:
+            end = raw.get("reqstCloseEndDe", "")
+            if not end or end >= today:
+                continue
+        if cutoff is not None:
+            reg = raw.get("pblancRegistDt", "")
+            if not reg or reg < cutoff:
+                continue
+        result.append(raw)
+    return result
 
 
 # ──────────────────────────────────────────────
@@ -435,16 +477,23 @@ async def bizinfo_search_programs(params: SearchProgramsInput) -> str:
         - "마감된 수출 지원사업" → realm="수출", status="마감"
     """
     try:
-        api_params = _build_search_params(
-            params.realm, params.region, params.status,
-            params.keyword, params.page, params.page_size,
-        )
-        data = await _call_api(api_params)
+        # API 레벨: 분야(searchLclasId), 지역(hashtags) 필터 적용
+        api_params: dict = {}
+        if params.realm != RealmType.전체:
+            api_params["searchLclasId"] = REALM_CODES.get(params.realm.value, "")
+        if params.region != RegionType.전국:
+            api_params["hashtags"] = params.region.value
 
-        items = data.get("jsonArray", [])
-        total = int(data.get("totalCount", 0))
+        all_items = await _fetch_all_programs(max_pages=6, extra_params=api_params)
 
-        if not items:
+        # 클라이언트 사이드: 상태(마감일 기준), 키워드(제목 포함) 필터
+        filtered = _apply_filters(all_items, keyword=params.keyword, status=params.status)
+
+        total = len(filtered)
+        start = (params.page - 1) * params.page_size
+        page_items = filtered[start: start + params.page_size]
+
+        if not page_items:
             return "검색 결과가 없습니다. 검색 조건을 변경해 보세요."
 
         lines = ["# 🏢 기업마당 지원사업 검색 결과", ""]
@@ -459,23 +508,23 @@ async def bizinfo_search_programs(params: SearchProgramsInput) -> str:
         conditions.append(f"상태: **{params.status.value}**")
 
         lines.append("**검색 조건**: " + " | ".join(conditions))
-        lines.append(f"**총 {total}건** 중 {len(items)}건 표시 (페이지 {params.page})")
+        lines.append(f"**총 {total}건** 중 {len(page_items)}건 표시 (페이지 {params.page})")
         lines.append("")
         lines.append("---")
         lines.append("")
 
-        for i, raw in enumerate(items, 1):
+        for idx, raw in enumerate(page_items, start + 1):
             prog = _parse_program(raw)
-            lines.append(f"## {i}. {prog['title']}")
+            realm_display = prog["realm"] or (params.realm.value if params.realm != RealmType.전체 else "-")
+            lines.append(f"## {idx}. {prog['title']}")
             lines.append(f"- **ID**: `{prog['id']}`")
-            lines.append(f"- **분야**: {prog['realm']}")
+            if realm_display:
+                lines.append(f"- **분야**: {realm_display}")
             lines.append(f"- **소관기관**: {prog['agency']}")
             if prog["executing_agency"] and prog["executing_agency"] != prog["agency"]:
                 lines.append(f"- **수행기관**: {prog['executing_agency']}")
-            lines.append(f"- **지역**: {prog['region']}")
             lines.append(f"- **신청기간**: {_format_date(prog['start_date'])} ~ {_format_date(prog['end_date'])}")
             lines.append(f"- **등록일**: {_format_date(prog['registered_date'])}")
-            lines.append(f"- **상태**: {prog['status']}")
             if prog["detail_url"]:
                 lines.append(f"- **상세보기**: [{prog['title']}]({prog['detail_url']})")
             lines.append("")
@@ -532,12 +581,16 @@ async def bizinfo_list_new_programs(params: ListNewProgramsInput) -> str:
     try:
         all_new: List[dict] = []
 
-        # ⚪ 수정: 여러 페이지 순회하여 신규 공고 누락 방지
+        # 여러 페이지 순회하여 신규 공고 수집
+        # API 레벨: 분야(searchLclasId), 지역(hashtags) 필터
+        base_params: dict = {}
+        if params.realm != RealmType.전체:
+            base_params["searchLclasId"] = REALM_CODES.get(params.realm.value, "")
+        if params.region != RegionType.전국:
+            base_params["hashtags"] = params.region.value
+
         for page_num in range(1, params.max_pages + 1):
-            api_params = _build_search_params(
-                params.realm, params.region, StatusType.전체,
-                None, page_num, params.page_size,
-            )
+            api_params = {**base_params, "pageIndex": page_num, "pageUnit": params.page_size}
             data = await _call_api(api_params)
             items = data.get("jsonArray", [])
             if not items:
@@ -631,12 +684,15 @@ async def bizinfo_generate_report(params: GenerateReportInput) -> str:
         page = 1
         page_size = min(params.max_items, 100)
 
-        # 🔴 수정: while 루프에 MAX_PAGES_PER_REQUEST 상한 적용
+        # API 레벨: 분야(searchLclasId), 지역(hashtags) 필터
+        base_params: dict = {}
+        if params.realm != RealmType.전체:
+            base_params["searchLclasId"] = REALM_CODES.get(params.realm.value, "")
+        if params.region != RegionType.전국:
+            base_params["hashtags"] = params.region.value
+
         while len(all_programs) < params.max_items and page <= MAX_PAGES_PER_REQUEST:
-            api_params = _build_search_params(
-                params.realm, params.region, StatusType.진행중,
-                None, page, page_size,
-            )
+            api_params = {**base_params, "pageIndex": page, "pageUnit": page_size}
             data = await _call_api(api_params)
             items = data.get("jsonArray", [])
             if not items:
@@ -762,10 +818,13 @@ async def bizinfo_get_stats(params: StatsInput) -> str:
     try:
         realms_to_check = [r for r in RealmType if r != RealmType.전체]
 
-        # 🔴 수정: asyncio.gather로 8개 분야를 병렬 조회 (순차 240초 → 병렬 30초)
+        # searchLclasId 파라미터로 분야별 병렬 조회 (totCnt 반환됨)
         async def _fetch_realm_count(realm: RealmType) -> tuple[str, int]:
-            api_params = _build_search_params(realm, params.region, StatusType.진행중, None, 1, 1)
-            data = await _call_api(api_params)
+            p: dict = {"pageIndex": 1, "pageUnit": 1,
+                       "searchLclasId": REALM_CODES.get(realm.value, "")}
+            if params.region != RegionType.전국:
+                p["hashtags"] = params.region.value
+            data = await _call_api(p)
             return realm.value, int(data.get("totalCount", 0))
 
         results = await asyncio.gather(
@@ -785,7 +844,7 @@ async def bizinfo_get_stats(params: StatsInput) -> str:
         total_count = 0
         for result in results:
             if isinstance(result, Exception):
-                lines.append(f"| (조회 실패) | - |")
+                lines.append("| (조회 실패) | - |")
                 continue
             realm_name, count = result
             total_count += count
