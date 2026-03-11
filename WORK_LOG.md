@@ -530,3 +530,122 @@ bizinfo-summarizer: # 자체 빌드, 포트 4000, ollama-model-init 완료 후 �
 | 모델 | Ollama 로컬 20B CPU | 상용 LLM API 대비 속도/품질 낮음 |
 
 PDF 추출은 이미지 스캔 PDF·HWP 파일 처리 난이도, 컨텍스트 길이 한계(4096 토큰), 추론 시간(5~10분) 문제로 현 아키텍처에서는 사용자 경험 저하가 우려되어 현재 구현에서 제외함.
+
+---
+
+## Section 15: Docker 환경 정리 (2026-03-11)
+
+### 작업 내용
+
+불필요한 Docker 컨테이너 및 이미지 정리.
+
+| 삭제 항목 | 종류 | 이유 |
+|-----------|------|------|
+| `bizinfo_demo-ollama-model-init-1` | 컨테이너 (Exited) | 모델 초기화 완료 후 종료된 일회성 컨테이너 |
+| `bizinfo_mcp-bizinfo-mcp:latest` | 이미지 (280MB) | `bizinfo_mcp/` 내 별도 docker-compose로 빌드된 중복 이미지 |
+
+### 정리 후 상태
+
+**컨테이너 (4개 Running)**
+```
+bizinfo_demo-bizinfo-summarizer-1   Up   포트 4000
+bizinfo_demo-bizinfo-web-1          Up   포트 3000
+bizinfo_demo-ollama-1               Up   포트 11434 (healthy)
+bizinfo_demo-bizinfo-mcp-1          Up   포트 8000
+```
+
+**이미지 (5개)**
+```
+bizinfo_demo-bizinfo-mcp:latest          280MB
+bizinfo_demo-bizinfo-summarizer:latest   272MB
+bizinfo_demo-bizinfo-web:latest          283MB
+curlimages/curl:latest                    38MB  (ollama-model-init 재실행용)
+ollama/ollama:latest                     8.71GB
+```
+
+---
+
+## Section 16: 클라우드 배포 옵션 분석 (2026-03-11)
+
+### 배경
+
+현재 로컬 Docker Compose 환경에서 운영 중인 서비스를 클라우드로 이전하는 방안 검토.
+
+### Supabase 이전 가능 여부 분석
+
+**결론: 현재 구조 그대로 Supabase 이전 불가**
+
+Supabase는 BaaS 플랫폼으로 Python 서버 실행 및 대용량 ML 모델 실행을 지원하지 않음.
+
+| 서비스 | Supabase 호환 | 이유 |
+|--------|:---:|------|
+| `bizinfo-web` (FastAPI) | ❌ | Python 서버 호스팅 불가 |
+| `bizinfo-mcp` (FastMCP SSE) | ❌ | Deno 기반 Edge Functions만 지원 |
+| `bizinfo-summarizer` | ❌ | Python 런타임 없음 |
+| `ollama` (20B LLM) | ❌ | 13.1 GiB 요구 → Edge Functions 512MB 한도의 26배 초과 |
+
+**부분 활용 가능한 시나리오**: Supabase PostgreSQL을 공고 캐싱 DB로, Supabase Auth를 사용자 인증으로 활용하고 나머지는 별도 호스팅.
+
+### 무료 배포 서비스 비교
+
+#### Docker/컨테이너 지원
+
+| 서비스 | 무료 한도 | 특징 |
+|--------|-----------|------|
+| Railway | $5 크레딧/월 | docker-compose 지원, 배포 간단 |
+| Render | 750시간/월 | Docker 지원, 슬립 모드 (15분 미사용 시 중단) |
+| Fly.io | VM 3개 (각 256MB) | Docker 지원, 글로벌 엣지, CLI 기반 |
+| Koyeb | 2개 서비스 | 메모리 512MB 제한 |
+
+#### AI/LLM 특화 (ollama 대체 후보)
+
+| 서비스 | 무료 한도 | 한국어 품질 |
+|--------|-----------|:---:|
+| Groq | 분당 30건 | 보통 |
+| Google AI Studio (Gemini Flash) | 분당 15건, 일 1,500건 | 우수 |
+| Claude API | 없음 (유료) | 최우수 |
+| OpenRouter | 일부 모델 무료 | 모델마다 다름 |
+
+### ollama 무료 배포의 현실적 한계
+
+| 항목 | 수치 |
+|------|------|
+| `gpt-oss-safeguard:20b` 메모리 요구량 | 13.1 GB |
+| Render / Railway / Fly.io 무료 메모리 | 256~512 MB |
+| 부족 배율 | 25~50배 |
+
+→ **무료 티어에서 ollama 20B 모델 실행 불가**
+
+### 권장 배포 구성 3가지
+
+#### 옵션 A: 빠른 배포 + 무료 운영 (권장)
+
+ollama → Groq 또는 Gemini Flash API로 교체, Python 서버는 Render 무료 티어 배포.
+
+- 예상 월 비용: $0 (무료 한도 내)
+- 요약 속도: 3~10초 (현재 30~90초 대비 대폭 향상)
+- 코드 변경량: 소 (`bizinfo-summarizer/main.py` `_call_ollama()` 함수만 수정)
+
+#### 옵션 B: 현재 코드 유지 + 유료 서버
+
+Python 서버는 Railway/Render 유료 인스턴스, ollama는 GPU 클라우드(RunPod, Modal).
+
+- 예상 월 비용: $30~80
+- 코드 변경량: 없음
+
+#### 옵션 C: Supabase 풀 활용 (장기 재설계)
+
+Python → TypeScript(Deno) 전면 재작성, Edge Functions + Supabase PostgreSQL 구성.
+
+- 예상 월 비용: $0
+- 코드 변경량: 대 (전면 재작성)
+
+### 산출물
+
+- `DEPLOYMENT_OPTIONS.md` 신규 작성 — 전체 분석 내용 상세 문서화
+
+### 미결 사항
+
+- [ ] ollama → Groq 또는 Gemini API 교체 작업
+- [ ] Render / Fly.io 배포 테스트
+- [ ] Supabase PostgreSQL 연동 (공고 캐싱) 설계
